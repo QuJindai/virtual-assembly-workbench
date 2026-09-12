@@ -128,6 +128,10 @@ jobs:
         with:
           name: windows-validation
           path: evidence
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-validation
+          path: linux-evidence
       - name: Publish tested preview
         env:
           GH_TOKEN: ${{ github.token }}
@@ -136,4 +140,7 @@ jobs:
           gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --prerelease \
             --title "Assembly Workbench $RELEASE_TAG" --notes-file docs/release-notes.md \
             release/AssemblyWorkbench-Windows-x64.zip release/SHA256SUMS.txt \
-            evidence/workbench-windows.png evidence/packaged-self-test/self-test.json
+            evidence/workbench-windows.png evidence/workbench-windows-viewport.png \
+            evidence/workbench-windows.render.json evidence/packaged-self-test/self-test.json \
+            linux-evidence/workbench-linux.png linux-evidence/workbench-linux-viewport.png \
+            linux-evidence/workbench-linux.render.json

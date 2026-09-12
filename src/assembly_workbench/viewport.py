@@ -11,10 +11,11 @@ import numpy as np
 import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
 import vtkmodules.vtkInteractionStyle  # noqa: F401
 import vtkmodules.vtkRenderingFreeType  # noqa: F401
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
-from vtkmodules.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray
+from vtkmodules.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray, vtk_to_numpy
 from vtkmodules.vtkCommonCore import vtkLookupTable, vtkPoints
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
 from vtkmodules.vtkFiltersGeneral import vtkVertexGlyphFilter
@@ -25,6 +26,7 @@ from vtkmodules.vtkRenderingCore import (
     vtkPolyDataMapper,
     vtkRenderer,
     vtkTextActor,
+    vtkWindowToImageFilter,
 )
 
 if TYPE_CHECKING:
@@ -39,6 +41,8 @@ MAX_DISPLAY_POINTS = 250_000
 
 class AssemblyViewport(QWidget):
     """Interactive VTK scene for transformed assembly assets."""
+
+    rendering_ready = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -114,6 +118,116 @@ class AssemblyViewport(QWidget):
         self.interactor.Start()
         self._initialized = True
         self.interactor.GetRenderWindow().Render()
+        self.rendering_ready.emit()
+
+    @property
+    def is_initialized(self) -> bool:
+        return self._initialized
+
+    def render_diagnostics(self) -> dict[str, object]:
+        """Return concise native renderer state for screenshot verification."""
+        render_window = self.interactor.GetRenderWindow()
+        diagnostics: dict[str, object] = {
+            "initialized": self._initialized,
+            "widget_size": [self.interactor.width(), self.interactor.height()],
+            "device_pixel_ratio": float(self.interactor.devicePixelRatioF()),
+            "render_window_size": list(render_window.GetSize()),
+            "render_window_class": render_window.GetClassName(),
+            "renderer_class": self.renderer.GetClassName(),
+            "actor_count": len(self._actors),
+        }
+        if self._initialized:
+            try:
+                diagnostics["open_gl_supported"] = bool(render_window.SupportsOpenGL())
+                diagnostics["open_gl_support_message"] = str(
+                    render_window.GetOpenGLSupportMessage()
+                )
+                capabilities = str(render_window.ReportCapabilities())
+                for label, key in (
+                    ("OpenGL vendor string", "open_gl_vendor"),
+                    ("OpenGL renderer string", "open_gl_renderer"),
+                    ("OpenGL version string", "open_gl_version"),
+                ):
+                    line = next(
+                        (line for line in capabilities.splitlines() if label in line),
+                        None,
+                    )
+                    if line:
+                        diagnostics[key] = line.split(":", 1)[-1].strip()
+            except RuntimeError as exc:
+                diagnostics["open_gl_diagnostics_error"] = str(exc)
+        return diagnostics
+
+    def capture_framebuffer(self) -> tuple[QImage, dict[str, object]]:
+        """Capture the real VTK back buffer as an owned top-left RGB image."""
+        if not self._initialized:
+            raise RuntimeError("VTK viewport has not initialized")
+
+        render_window = self.interactor.GetRenderWindow()
+        render_window.Render()
+        capture = vtkWindowToImageFilter()
+        capture.SetInput(render_window)
+        capture.SetInputBufferTypeToRGB()
+        capture.ReadFrontBufferOff()
+        capture.Update()
+
+        output = capture.GetOutput()
+        width, height, _depth = output.GetDimensions()
+        scalars = output.GetPointData().GetScalars()
+        if width < 1 or height < 1 or scalars is None:
+            raise RuntimeError("VTK framebuffer capture returned no pixels")
+        components = scalars.GetNumberOfComponents()
+        if components < 3:
+            raise RuntimeError(
+                f"VTK framebuffer returned {components} color components; expected RGB"
+            )
+
+        values = vtk_to_numpy(scalars)
+        pixels = values.reshape(height, width, components)[..., :3]
+        # VTK images start at the lower-left; QImage starts at the upper-left.
+        pixels = np.ascontiguousarray(np.flipud(pixels), dtype=np.uint8)
+        image = QImage(
+            pixels.data,
+            width,
+            height,
+            int(pixels.strides[0]),
+            QImage.Format.Format_RGB888,
+        ).copy()
+        image.setDevicePixelRatio(float(self.interactor.devicePixelRatioF()))
+
+        red = pixels[..., 0].astype(np.int16)
+        green = pixels[..., 1].astype(np.int16)
+        blue = pixels[..., 2].astype(np.int16)
+        cyan = (
+            (green >= 130)
+            & (blue >= 150)
+            & (green > red + 70)
+            & (blue > red + 80)
+        )
+        amber = (
+            (red >= 150)
+            & (green >= 90)
+            & (green < 230)
+            & (blue < 120)
+            & (red > green + 40)
+            & (green > blue + 40)
+        )
+        packed = (
+            (red.astype(np.uint32) << 16)
+            | (green.astype(np.uint32) << 8)
+            | blue.astype(np.uint32)
+        )
+        diagnostics = self.render_diagnostics()
+        diagnostics.update(
+            {
+                "framebuffer_size": [width, height],
+                "color_components": 3,
+                "unique_color_count": int(np.unique(packed).size),
+                "cyan_pixel_count": int(np.count_nonzero(cyan)),
+                "amber_pixel_count": int(np.count_nonzero(amber)),
+            }
+        )
+        return image, diagnostics
 
     def set_assets(
         self,

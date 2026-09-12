@@ -9,7 +9,8 @@ import sys
 import numpy as np
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFileDialog
+from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QFileDialog, QToolBar
 
 from assembly_workbench.gui import MainWindow
 
@@ -57,6 +58,27 @@ def _run_screenshot_process(root: Path, destination: Path) -> subprocess.Complet
     )
 
 
+def _demo_color_counts(path: Path) -> tuple[int, int]:
+    image = QImage(str(path)).convertToFormat(QImage.Format.Format_RGB888)
+    assert not image.isNull()
+    rows = np.frombuffer(image.bits(), dtype=np.uint8, count=image.sizeInBytes()).reshape(
+        image.height(), image.bytesPerLine()
+    )
+    pixels = rows[:, : image.width() * 3].reshape(image.height(), image.width(), 3)
+    red = pixels[..., 0].astype(np.int16)
+    green = pixels[..., 1].astype(np.int16)
+    blue = pixels[..., 2].astype(np.int16)
+    cyan = (green >= 130) & (blue >= 150) & (green > red + 70) & (blue > red + 80)
+    amber = (
+        (red >= 150)
+        & (green >= 90)
+        & (blue < 120)
+        & (red > green + 40)
+        & (green > blue + 40)
+    )
+    return int(np.count_nonzero(cyan)), int(np.count_nonzero(amber))
+
+
 def test_demo_populates_visible_source_and_reference_controls(window, qtbot):
     """Catches a demo load that updates data without updating the visible workflow."""
     window.load_demo()
@@ -76,6 +98,15 @@ def test_parameter_controls_do_not_offer_values_rejected_by_engine(window):
     """Catches GUI parameter ranges that exceed the core's validated limits."""
     assert window.iteration_spin.maximum() == 500
     assert window.max_samples_spin.maximum() == 2_000_000
+
+
+def test_toolbar_actions_show_text_beside_icons(window):
+    """Catches primary workflow actions being rendered as ambiguous icons only."""
+    toolbar = window.findChild(QToolBar, "mainToolbar")
+    assert toolbar.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+    assert {"演示", "导入", "打开项目", "保存项目", "导出报告"} <= {
+        action.text() for action in toolbar.actions()
+    }
 
 
 def test_registration_is_native_async_and_requires_explicit_apply(window, qtbot):
@@ -205,12 +236,29 @@ def test_toolbar_exports_real_measurement_files(window, qtbot, monkeypatch, tmp_
 def test_launch_captures_painted_window_and_exits(tmp_path):
     """Catches screenshot mode that captures before paint or leaves the app running."""
     screenshot = tmp_path / "workbench.png"
+    viewport = tmp_path / "workbench-viewport.png"
+    diagnostics_path = tmp_path / "workbench.render.json"
     root = Path(__file__).resolve().parents[1]
     completed = _run_screenshot_process(root, screenshot)
 
     assert completed.returncode == 0, completed.stderr
     assert screenshot.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     assert screenshot.stat().st_size > 10_000
+    assert viewport.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    assert diagnostics["initialized"] is True
+    assert diagnostics["framebuffer_size"][0] > 400
+    assert diagnostics["framebuffer_size"][1] > 300
+    assert diagnostics["render_window_class"].endswith("OpenGLRenderWindow")
+    assert diagnostics["renderer_class"] == "vtkOpenGLRenderer"
+    assert diagnostics["cyan_pixel_count"] > 20
+    assert diagnostics["amber_pixel_count"] > 20
+    raw_cyan, raw_amber = _demo_color_counts(viewport)
+    composed_cyan, composed_amber = _demo_color_counts(screenshot)
+    assert raw_cyan > 20
+    assert raw_amber > 20
+    assert composed_cyan > 20
+    assert composed_amber > 20
 
 
 def test_launch_reports_screenshot_write_failure_with_nonzero_exit(tmp_path):

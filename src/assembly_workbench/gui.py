@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import traceback
 from collections.abc import Callable
@@ -9,8 +10,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtCore import QObject, QRect, QSize, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QAction, QCloseEvent, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -103,6 +104,7 @@ class MainWindow(QMainWindow):
         toolbar.setObjectName("mainToolbar")
         toolbar.setMovable(False)
         toolbar.setIconSize(QSize(20, 20))
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.addToolBar(toolbar)
 
         brand = QWidget(toolbar)
@@ -918,29 +920,112 @@ def launch(demo: bool = False, screenshot: str | Path | None = None) -> int:
 
     if screenshot is not None:
         destination = Path(screenshot)
+        viewport_destination = destination.with_name(f"{destination.stem}-viewport.png")
+        diagnostics_destination = destination.with_suffix(".render.json")
+        screenshot_finished = False
+        capture_timeout = QTimer(window)
+        capture_timeout.setSingleShot(True)
+
+        def finish_screenshot(exit_code: int) -> None:
+            nonlocal screenshot_finished
+            if screenshot_finished:
+                return
+            screenshot_finished = True
+            capture_timeout.stop()
+            quit_on_close = app.quitOnLastWindowClosed()
+            app.setQuitOnLastWindowClosed(False)
+            window.close()
+            app.setQuitOnLastWindowClosed(quit_on_close)
+            app.exit(exit_code)
+
+        def write_diagnostics(diagnostics: dict[str, object]) -> bool:
+            try:
+                diagnostics_destination.parent.mkdir(parents=True, exist_ok=True)
+                diagnostics_destination.write_text(
+                    json.dumps(diagnostics, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                return True
+            except OSError as exc:
+                print(f"无法保存渲染诊断：{exc}", file=sys.stderr)
+                return False
 
         def capture() -> None:
-            exit_code = 0
+            if screenshot_finished or not window.viewport.is_initialized:
+                return
+            diagnostics: dict[str, object] = {
+                "initialized": window.viewport.is_initialized
+            }
+            exit_code = 1
             try:
+                diagnostics = window.viewport.render_diagnostics()
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                window.viewport.render()
-                app.processEvents()
-                if not window.grab().save(str(destination)):
-                    window.statusBar().showMessage(f"无法保存截图：{destination}")
-                    exit_code = 1
-            except OSError as exc:
-                window.statusBar().showMessage(f"无法保存截图：{exc}")
-                exit_code = 1
-            finally:
-                quit_on_close = app.quitOnLastWindowClosed()
-                app.setQuitOnLastWindowClosed(False)
-                window.close()
-                app.setQuitOnLastWindowClosed(quit_on_close)
-                app.exit(exit_code)
+                framebuffer, diagnostics = window.viewport.capture_framebuffer()
+                if not framebuffer.save(str(viewport_destination), "PNG"):
+                    raise OSError(f"无法保存原始视口：{viewport_destination}")
+                diagnostics["raw_viewport_path"] = viewport_destination.name
 
-        # Two event-loop turns plus a short paint interval ensure the VTK scene
-        # and native window have both received their first expose event.
-        QTimer.singleShot(350, capture)
+                cyan_count = int(diagnostics["cyan_pixel_count"])
+                amber_count = int(diagnostics["amber_pixel_count"])
+                diagnostics["demo_color_validation_required"] = demo
+                diagnostics["demo_colors_present"] = cyan_count > 20 and amber_count > 20
+                if demo and not diagnostics["demo_colors_present"]:
+                    raise RuntimeError(
+                        "VTK帧缓冲未包含演示的青色移动件和琥珀色参考件"
+                    )
+
+                composite = window.grab()
+                top_left = window.viewport.interactor.mapTo(
+                    window, window.viewport.interactor.rect().topLeft()
+                )
+                target = QRect(top_left, window.viewport.interactor.size())
+                painter = QPainter(composite)
+                if not painter.isActive():
+                    raise RuntimeError("无法创建截图合成画布")
+                try:
+                    painter.drawImage(target, framebuffer)
+                finally:
+                    painter.end()
+                diagnostics["composite_viewport_rect"] = [
+                    target.x(),
+                    target.y(),
+                    target.width(),
+                    target.height(),
+                ]
+                if not composite.save(str(destination), "PNG"):
+                    raise OSError(f"无法保存截图：{destination}")
+                diagnostics["screenshot_path"] = destination.name
+                exit_code = 0
+            except Exception as exc:  # screenshot mode must report every capture failure
+                diagnostics["capture_error"] = f"{type(exc).__name__}: {exc}"
+                window.statusBar().showMessage(f"无法保存截图：{exc}")
+                print(diagnostics["capture_error"], file=sys.stderr)
+            finally:
+                if not write_diagnostics(diagnostics):
+                    exit_code = 1
+                finish_screenshot(exit_code)
+
+        def capture_timed_out() -> None:
+            diagnostics: dict[str, object] = {
+                "initialized": window.viewport.is_initialized
+            }
+            try:
+                diagnostics = window.viewport.render_diagnostics()
+            except Exception as exc:
+                diagnostics["diagnostics_error"] = f"{type(exc).__name__}: {exc}"
+            diagnostics["capture_error"] = "VTK viewport did not initialize within 10 seconds"
+            print(diagnostics["capture_error"], file=sys.stderr)
+            write_diagnostics(diagnostics)
+            finish_screenshot(1)
+
+        def schedule_capture() -> None:
+            QTimer.singleShot(0, capture)
+
+        window.viewport.rendering_ready.connect(schedule_capture)
+        capture_timeout.timeout.connect(capture_timed_out)
+        capture_timeout.start(10_000)
+        if window.viewport.is_initialized:
+            schedule_capture()
 
     if owns_app:
         return app.exec()
