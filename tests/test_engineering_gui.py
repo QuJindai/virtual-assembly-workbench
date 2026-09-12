@@ -80,9 +80,16 @@ def test_busy_dialog_cannot_close_early(workspace,qtbot):
 
 def test_layout_keeps_actions_visible_at_minimum_size(workspace,qtbot):
     window,dialog,_=workspace
-    dialog.resize(1060,660);qtbot.wait(100)
+    dialog.resize(1000,640);dialog.load_example('feature');dialog.run_current()
+    qtbot.waitUntil(lambda:not window.busy,timeout=30000);qtbot.wait(100)
     assert dialog.run_button.isVisible() and dialog.export_button.isVisible()
     assert dialog.rect().contains(dialog.run_button.mapTo(dialog,dialog.run_button.rect().center()))
+    viewport_bottom=dialog.viewport.mapTo(dialog,dialog.viewport.rect().bottomLeft()).y()
+    summary_top=dialog.summary.mapTo(dialog,dialog.summary.rect().topLeft()).y()
+    assert viewport_bottom<summary_top
+    assert dialog.rect().contains(dialog.summary.mapTo(dialog,dialog.summary.rect().center()))
+    header=dialog.results_table.horizontalHeader()
+    assert dialog.rect().contains(header.mapTo(dialog,header.rect().center()))
 
 
 def test_recipe_import_rejects_clamping_and_preserves_current_inputs(workspace):
