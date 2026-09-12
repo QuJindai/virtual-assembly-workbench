@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "virtual-assembly-workbench"
+version = "0.1.0"
+description = "Local Qt/VTK point-cloud and CAD virtual assembly workbench"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = {text = "MIT"}
+dependencies = [
+  "numpy==2.3.5", "scipy==1.17.0", "small-gicp==1.0.0",
+  "vtk==9.3.1", "cadquery-ocp==7.8.1.1.post1", "PySide6==6.8.3"
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.4.2", "pytest-qt==4.5.0", "pyinstaller==6.16.0"]
+
+[project.scripts]
+assembly-workbench = "assembly_workbench.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyside6"
+markers = ["gui: requires a working display and OpenGL"]
