@@ -121,6 +121,11 @@ def test_measurement_finishes_with_real_mm_statistics_and_is_invalidated(window,
     assert "mm" in window.deviation_summary.text()
     assert window.export_action.isEnabled()
 
+    history = window.history[-1]["result"]
+    assert history["statistics"]["sample_count"] == result.statistics["sample_count"]
+    assert "distances_mm" not in history
+    assert "indices" not in history
+
     window.target_combo.setCurrentIndex(0)
 
     assert window.last_deviation is None
