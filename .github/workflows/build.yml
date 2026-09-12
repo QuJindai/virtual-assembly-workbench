@@ -40,6 +40,7 @@ jobs:
         run: |
           python -m assembly_workbench --self-test artifacts/linux-self-test
           xvfb-run -a -s '-screen 0 1600x1000x24' python -m assembly_workbench --demo --screenshot artifacts/workbench-linux.png
+          xvfb-run -a -s '-screen 0 1600x1000x24' python -m assembly_workbench --engineering-demo feature --screenshot artifacts/engineering-linux.png
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -93,6 +94,9 @@ jobs:
           & dist/AssemblyWorkbench/AssemblyWorkbench.exe --demo --screenshot artifacts/workbench-windows.png
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (!(Test-Path artifacts/workbench-windows.png)) { throw 'Packaged screenshot missing' }
+          & dist/AssemblyWorkbench/AssemblyWorkbench.exe --engineering-demo feature --screenshot artifacts/engineering-windows.png
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path artifacts/engineering-windows.png)) { throw 'Engineering screenshot missing' }
           # Mesa supplies the test machine's OpenGL implementation, like a GPU
           # driver on a user's desktop. It is not an application dependency.
           Get-ChildItem "$env:MESA_CI_DRIVER/*.dll" | ForEach-Object { Remove-Item (Join-Path 'dist/AssemblyWorkbench' $_.Name) }
@@ -135,7 +139,7 @@ jobs:
       - name: Publish tested preview
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: v0.1.1-build.${{ github.run_number }}
+          RELEASE_TAG: v0.2.0-build.${{ github.run_number }}
         run: |
           gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --prerelease \
             --title "Assembly Workbench $RELEASE_TAG" --notes-file docs/release-notes.md \
@@ -143,4 +147,7 @@ jobs:
             evidence/workbench-windows.png evidence/workbench-windows-viewport.png \
             evidence/workbench-windows.render.json evidence/packaged-self-test/self-test.json \
             linux-evidence/workbench-linux.png linux-evidence/workbench-linux-viewport.png \
-            linux-evidence/workbench-linux.render.json
+            linux-evidence/workbench-linux.render.json \
+            evidence/engineering-windows.png evidence/engineering-windows-viewport.png \
+            evidence/engineering-windows.render.json linux-evidence/engineering-linux.png \
+            linux-evidence/engineering-linux-viewport.png linux-evidence/engineering-linux.render.json

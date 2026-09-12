@@ -1,8 +1,8 @@
 # 虚拟装配工作台 · Virtual Assembly Workbench
 
-本地运行的点云与 CAD 装配分析桌面软件。用成熟的开源几何引擎完成 **导入 → 刚体配准 → 应用变换 → 几何偏差 → 工程保存与报告导出**，提供中文 Qt 界面和可交互三维视图。
+本地运行的点云与 CAD 装配分析桌面软件。v0.2 使用成熟几何引擎完成 **导入 → 基准建系/配准 → 尺寸测量 → 刚体装调 → 工程重算与报告导出**，提供中文 Qt 界面和可交互三维视图。
 
-[自动构建](https://github.com/QuJindai/virtual-assembly-workbench/actions/workflows/build.yml) · [发行包](https://github.com/QuJindai/virtual-assembly-workbench/releases) · [实现规格](docs/design.md)
+[自动构建](https://github.com/QuJindai/virtual-assembly-workbench/actions/workflows/build.yml) · [发行包](https://github.com/QuJindai/virtual-assembly-workbench/releases) · [尺寸工程指南](docs/engineering-guide.md) · [2026-09-12 研发调研](docs/research-2026-09-12.md)
 
 ## 开始使用
 
@@ -29,19 +29,20 @@ python -m assembly_workbench --demo
 2. 在右侧选择“移动件”和“参考件”。左侧勾选控制显示；三维窗口支持旋转、缩放和平移。
 3. 在“配准”页运行 GICP 或 ICP，检查 RMSE、匹配率、迭代次数和收敛状态，再点击“应用计算变换”。算法是局部配准，初始位姿偏差较大时先用“刚体调整”靠近基准。
 4. 在“偏差”页设置距离阈值及采样上限，计算颜色分布、RMS、P95、最大值和阈值内比例。显示采样点数与总点数，未测点不计入统计。
-5. “导出报告”生成离线 HTML、完整 JSON、逐点 CSV 和变换后 XYZ；“保存项目”生成包含几何、CAD、位姿、历史的 `.vaw`，可移动到其他电脑恢复。
+5. 点击“尺寸工程”，使用 3-2-1 / RPS、几何特征拟合、平面/圆候选、间隙面差、截面、闭合 CAD 干涉和逐点坐标公差；可新增合成示例、保存方案和历史重算。
+6. “导出报告”生成离线 HTML、完整 JSON、逐点 CSV 和变换后 XYZ；“保存项目”生成包含几何、CAD、位姿、历史的 `.vaw`，可移动到其他电脑恢复。
 
-计算在后台线程执行；改变选择、几何或位姿会清除当前结果，导出还会校验几何指纹，防止复用旧数据。遇到同名报告文件时自动建立新的报告子目录，保护原始输入和旧报告。工程历史保留方法、参数、位姿和统计摘要；逐点测量值保存在当前分析及导出的 CSV/JSON 中。GUI 当前提供六自由度手动初始位姿，三点对应拟合仅提供 Python API。
+计算在后台线程执行；改变选择、几何或位姿会清除当前结果，导出还会校验几何指纹，防止复用旧数据。遇到同名报告文件时自动建立新的报告子目录，保护原始输入和旧报告。尺寸工程历史保留完整方案、选点、结果和资产指纹，普通距离分析保留摘要及导出文件。3-2-1 / RPS 与刚体装调先显示六轴调整量，须显式应用后再复测。
 
 ## 几何与算法
 
 ### eMMA测量CSV
 
-v0.1.1起，“导入”可以自动识别带`IPE.Origin.X/Y/Z`表头的eMMA导出，按检测计划、零件、样本编号与时间拆分名义值/实测值。`MPT`为名义记录；具有样本编号和时间的`A`记录为实测；类别为空但样本编号和时间齐全的记录会按此规则识别为实测，并明确计数。缺失坐标不会补零，冲突测点编号会隔离；缺少表头或行列截断的文件会被拒绝。当前不解释eMMA计算特征或GD&T公差。
+v0.1.1起，“导入”可以自动识别带`IPE.Origin.X/Y/Z`表头的eMMA导出，按检测计划、零件、样本编号与时间拆分名义值/实测值。`MPT`为名义记录；具有样本编号和时间的`A`记录为实测；类别为空但样本编号和时间齐全的记录会按此规则识别为实测，并明确计数。缺失坐标不会补零，冲突测点编号会隔离；缺少表头或行列截断的文件会被拒绝。v0.2 的尺寸工程页可读取原始名义 XYZ 坐标偏差上下限；其他计算特征和完整 GD&T 公差尚未解释。
 
 两组带编号数据的偏差计算使用**同一检测计划与零件内的测点编号对应**，保留无对应点计数，避免最近邻把不同测点错配。CSV报告包含测点编号和三个方向的坐标差。测点是稀疏特征位置（例如孔中心），不是连续扫描表面；一部分测点有结果不代表完整测量覆盖。导入历史保留缺失、推断和冲突计数，悬停可查看完整文字。
 
-带测点编号的工程使用`.vaw`格式版本2，需要v0.1.1或更新程序读取，以防旧程序忽略测点编号。普通点云/CAD工程保持版本1兼容。重复导入相同样本前应先移除已有对象，避免在项目中混淆实例。CATPart、CATProduct、CATDrawing、3DXML当前需要在CATIA或合规转换器中导出STEP/IGES后再使用。
+带测点编号的工程使用`.vaw`格式版本2，需要v0.1.1或更新程序读取，以防旧程序忽略测点编号。普通点云/CAD工程保持版本1兼容。包含尺寸工程完整历史的项目使用版本3，需要v0.2读取；新程序可读版本1/2。重复导入相同样本前应先移除已有对象，避免在项目中混淆实例。CATPart、CATProduct、CATDrawing、3DXML当前需要在CATIA或合规转换器中导出STEP/IGES后再使用。
 
 批量验证私有数据：`python scripts/validate_emma_folder.py INPUT_FOLDER --output NEW_OUTPUT_FOLDER`。输出包含原始坐标工程、逐点报告和ICP/GICP运行记录；配准只在副本上测试，不修改交付工程中的实测坐标。报告、截图、项目和原始数据可能含有敏感零件信息，请保存在自己的私有目录。
 
@@ -53,7 +54,12 @@ v0.1.1起，“导入”可以自动识别带`IPE.Origin.X/Y/Z`表头的eMMA导�
 | 带编号测点 | 同范围的测点编号对应 | 同一特征位置的三维差值，明确无对应点数量 |
 | 网格基准 | VTK 三角面定位器 | 到三角形表面的距离，包含面内部 |
 | CAD 基准 | OCCT 经 cadquery-ocp 绑定 | 到原始 CAD 面的几何距离，遵循 CAD 自身容差；显示网格不参与此距离计算 |
-| 工程与报告 | NumPy + JSON + ZIP | 无 pickle；包含单位、位姿、方法、参数和采样计数 |
+| 3-2-1 / RPS / 装调 | 分层基准 + SciPy 有界优化 | 显式法向、自由度、权重、中心、行程和约束秩 |
+| 平面/线/圆/球/圆柱 | 正交/几何最小二乘；平面/圆有界稳健候选 | 几何参数、残差、内点和病态性诊断，不是认证 GD&T |
+| 间隙/面差与截面 | 配对边缘投影 + OCCT/VTK | 有符号量规；真实几何截面或现有点云薄层 |
+| 实体干涉 | OCCT 最小距离 + Common 公共体积 | 有效闭合 CAD 的分离/接触/干涉，不是接触力学 |
+| 逐点公差 | 编号对应 + 显式方向限值 | 缺测/未判独立，支持名义局部坐标系 |
+| 工程与报告 | NumPy + JSON + ZIP | 无 pickle；完整方案/结果、单位、位姿、方法、参数和指纹 |
 
 | 输入 | 支持范围 |
 |---|---|
@@ -71,9 +77,10 @@ v0.1.1起，“导入”可以自动识别带`IPE.Origin.X/Y/Z`表头的eMMA导�
 python -m assembly_workbench --self-test artifacts/self-test
 python -m pytest -q
 python -m assembly_workbench --demo --screenshot artifacts/workbench.png
+python -m assembly_workbench --engineering-demo feature --screenshot artifacts/engineering.png
 ```
 
-自检会执行真实 GICP、已知变换校验、OCCT 盒体内外点到表面距离、工程往返和报告导出，生成 `self-test.json` 与可检查文件。没有 Linux DISPLAY 时仅跳过 GUI 测试；CI 在真实窗口系统下执行 GUI 流程。测试数据是固定种子的合成几何，精度阈值用于验证实现，不能解释为现场测量精度。
+自检会执行真实 GICP、已知变换校验、OCCT 表面距离和公共体积、九类尺寸工程工具、方案重算、工程往返和报告导出，生成 `self-test.json` 与可检查文件。没有 Linux DISPLAY 时仅跳过 GUI 测试；CI 在真实窗口系统下执行 GUI 流程。测试数据是固定种子的合成几何，精度阈值用于验证实现，不能解释为现场测量精度。
 
 Windows 便携打包：
 
@@ -87,7 +94,7 @@ dist/AssemblyWorkbench/AssemblyWorkbench.exe --self-test artifacts/packaged-self
 
 ## 当前边界
 
-v0.1 实现本地几何装配闭环。当前无全局特征粗配准、非刚性变形、接触/碰撞求解、FEA、PhysicsNeMo、GD&T 或生产系统接口。距离是**无符号**值，不能据此判断正负间隙和实体干涉；阈值内比例不是工艺放行结论。真实工厂数据、超大点云性能和计量溯源需要单独验证。
+v0.2 提供尺寸工程与刚体装调预览工作流。当前无全局特征粗配准、非刚性变形、接触力学、FEA、PhysicsNeMo、完整 GD&T 或生产设备接口。普通最近面距离仍为无符号，间隙面差与实体干涉使用独立的明确量规和实体算法。逐点坐标筛查不是工艺放行结论；合成已知答案与真实 CSV 数值验证不构成计量认证。不能据此宣称已全面超越 PolyWorks。
 
 应用代码为 MIT；依赖分别遵循其上游许可证，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。合成示例不包含真实零件图纸、扫描数据或专有软件源码。
 Local-first Qt/VTK virtual assembly workbench with point-cloud registration, OCCT CAD comparison and reproducible engineering reports.

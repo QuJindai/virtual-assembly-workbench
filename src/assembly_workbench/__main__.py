@@ -44,6 +44,8 @@ def self_test(directory: Path) -> dict:
     cad_result = measure_deviation(probes, cad)
     if not np.allclose(cad_result.distances_mm, [5, 2], atol=1e-9):
         raise RuntimeError("CAD surface-distance known-answer check failed")
+    from .engineering_examples import self_test as engineering_self_test
+    engineering = engineering_self_test(directory / 'engineering')
     receipt = {
         "application": "virtual-assembly-workbench", "version": __version__,
         "passed": True, "data": "deterministic synthetic fixtures; not production validation",
@@ -52,6 +54,7 @@ def self_test(directory: Path) -> dict:
         "deviation": deviation.statistics,
         "project_restored": restored_ok,
         "cad_surface_distances_mm": cad_result.distances_mm.tolist(),
+        "engineering": engineering,
     }
     (directory / "self-test.json").write_text(
         json.dumps(receipt, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8"
@@ -65,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--demo", action="store_true", help="打开内置合成装配演示")
     mode.add_argument("--self-test", type=Path, metavar="DIRECTORY", help="无界面验证原生计算并导出证据")
+    mode.add_argument("--engineering-demo", choices=("datum321","rps","adjustment","feature","detect","gap_flush","section","contact","inspection"), help="打开尺寸工程合成示例并计算")
     parser.add_argument("--screenshot", type=Path, metavar="PNG", help="保存真实窗口截图后退出")
     args = parser.parse_args(argv)
     if args.self_test and args.screenshot:
@@ -76,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         from .gui import launch
 
-        return launch(demo=args.demo, screenshot=args.screenshot)
+        return launch(demo=args.demo, screenshot=args.screenshot, engineering_demo=args.engineering_demo)
     except Exception as exc:
         print(f"Assembly Workbench: {exc}", file=sys.stderr)
         return 1

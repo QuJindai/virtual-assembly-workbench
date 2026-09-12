@@ -180,8 +180,15 @@ def save_project(path, assets, history=None):
     path = Path(path)
     if not assets or len(assets) > 100 or len({a.id for a in assets}) != len(assets):
         raise ValueError('工程需包含1–100个不同的几何对象。')
-    version = 2 if any(a.point_ids is not None for a in assets) else 1
-    manifest = dict(format='assembly-workbench', version=version, units='mm', app_version=__version__, assets=[], history=history or [])
+    history = history if history is not None else []
+    if not isinstance(history,list) or any(not isinstance(row,dict) for row in history):
+        raise ValueError('工程历史记录必须为对象列表。')
+    history_bytes = json.dumps(history,ensure_ascii=False,allow_nan=False,separators=(',',':')).encode('utf-8')
+    if len(history_bytes)>128*1024*1024:
+        raise ValueError('工程历史超过128 MiB，请拆分工程；原工程已保留。')
+    version = 3 if any(row.get('type')=='engineering' for row in history) else 2 if any(a.point_ids is not None for a in assets) else 1
+    manifest = dict(format='assembly-workbench', version=version, units='mm', app_version=__version__, assets=[], history=[] if version==3 else history)
+    if version==3:manifest['history_file']='history.json'
     # Validate JSON before opening/replacing any destination.
     json.dumps(manifest, allow_nan=False)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -190,6 +197,9 @@ def save_project(path, assets, history=None):
     try:
         total = 0
         with zipfile.ZipFile(temporary, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+            if version==3:
+                archive.writestr('history.json',history_bytes)
+                total+=len(history_bytes)
             for asset in assets:
                 asset.world_points()  # validate any edited matrix
                 entry = dict(id=asset.id, name=asset.name, kind=asset.kind,
@@ -237,15 +247,19 @@ def load_project(path):
         with zipfile.ZipFile(path) as archive:
             infos = archive.infolist()
             names = [i.filename for i in infos]
-            if len(infos) > 201 or len(set(names)) != len(names) or sum(i.file_size for i in infos) > MAX_ARCHIVE_BYTES:
+            if len(infos) > 202 or len(set(names)) != len(names) or sum(i.file_size for i in infos) > MAX_ARCHIVE_BYTES:
                 raise ValueError('工程条目重复、过多或解压体积过大。')
             if any('/' in n or '\\' in n or n.startswith('.') for n in names):
                 raise ValueError('工程包含非法路径。')
             if archive.getinfo('manifest.json').file_size > MAX_MANIFEST_BYTES:
                 raise ValueError('工程清单过大。')
             manifest = _json(archive.read('manifest.json'))
-            if manifest.get('format') != 'assembly-workbench' or manifest.get('version') not in (1, 2) or manifest.get('units') != 'mm':
+            if manifest.get('format') != 'assembly-workbench' or manifest.get('version') not in (1, 2, 3) or manifest.get('units') != 'mm':
                 raise ValueError('不支持的工程版本或单位。')
+            if manifest['version']==3:
+                if manifest.get('history_file')!='history.json' or manifest.get('history')!=[] or archive.getinfo('history.json').file_size>128*1024*1024:
+                    raise ValueError('工程历史索引无效或历史数据过大。')
+                manifest['history']=_json(archive.read('history.json'))
             entries = manifest.get('assets')
             if not isinstance(entries, list) or not 1 <= len(entries) <= 100:
                 raise ValueError('工程几何清单无效。')

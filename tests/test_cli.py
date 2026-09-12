@@ -18,6 +18,9 @@ def test_headless_self_test_exercises_export_project_and_cad(tmp_path):
     assert receipt["registration"]["rmse_mm"] < 0.08
     assert receipt["cad_surface_distances_mm"] == [5.0, 2.0]
     assert receipt["project_restored"] is True
+    assert receipt['engineering']['tools_passed']==9
+    assert receipt['engineering']['project_replay_verified'] is True
+    assert receipt['engineering']['known_answers']['contact_volume_mm3']==8.0
     assert (output / "demo.vaw").is_file()
     assert (output / "report" / "report.html").is_file()
     assert (output / "report" / "aligned.xyz").is_file()

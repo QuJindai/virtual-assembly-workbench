@@ -85,6 +85,7 @@ class MainWindow(QMainWindow):
         self.busy = False
         self.history: list[dict[str, Any]] = []
         self.project_path: Path | None = None
+        self.engineering_dialog = None
         self._worker: _Worker | None = None
         self._worker_thread: QThread | None = None
         self._success_handler: Callable[[Any], None] | None = None
@@ -134,6 +135,9 @@ class MainWindow(QMainWindow):
         )
         self.export_action = self._toolbar_action(
             toolbar, "导出报告", QStyle.StandardPixmap.SP_DialogApplyButton, self.export_report
+        )
+        self.engineering_action = self._toolbar_action(
+            toolbar, "尺寸工程", QStyle.StandardPixmap.SP_FileDialogDetailedView, self.open_engineering
         )
         toolbar.addSeparator()
         fit_action = self._toolbar_action(
@@ -290,7 +294,7 @@ class MainWindow(QMainWindow):
         self.max_samples_spin = QSpinBox()
         self.max_samples_spin.setRange(1, 2_000_000)
         self.max_samples_spin.setValue(5000)
-        form.addRow("公差", self.tolerance_spin)
+        form.addRow("距离阈值", self.tolerance_spin)
         form.addRow("最大采样数", self.max_samples_spin)
         layout.addLayout(form)
         self.measure_button = QPushButton("测量几何偏差")
@@ -729,6 +733,18 @@ class MainWindow(QMainWindow):
     def _fit_view(self) -> None:
         self.viewport.fit_view()
 
+    def open_engineering(self) -> None:
+        if self.busy:
+            return
+        from .engineering_gui import EngineeringDialog
+        if self.engineering_dialog is None:
+            self.engineering_dialog = EngineeringDialog(self)
+        else:
+            self.engineering_dialog.refresh_assets()
+            self.engineering_dialog.refresh_history()
+        self.engineering_dialog.show()
+        self.engineering_dialog.raise_()
+
     def _set_point_size(self, value: float) -> None:
         self.viewport.set_point_size(value)
 
@@ -803,6 +819,8 @@ class MainWindow(QMainWindow):
             "registration": "配准",
             "deviation": "偏差",
             "transform": "变换",
+            "engineering": "尺寸工程",
+            "controls_import": "公差导入",
         }
         values = (
             labels.get(str(row.get("type")), str(row.get("type", "结果"))),
@@ -825,6 +843,7 @@ class MainWindow(QMainWindow):
         )
         for control in (
             self.demo_action,
+            self.engineering_action,
             self.import_action,
             self.open_action,
             self.save_action,
@@ -855,6 +874,8 @@ class MainWindow(QMainWindow):
         self.transform_button.setEnabled(source_available)
         self.export_action.setEnabled(not self.busy and self.last_deviation is not None)
         self.asset_list.setEnabled(not self.busy)
+        if self.engineering_dialog is not None:
+            self.engineering_dialog.refresh_busy()
 
     def _start_operation(
         self,
@@ -927,7 +948,20 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
-def launch(demo: bool = False, screenshot: str | Path | None = None) -> int:
+def _exit_after_work(window,app,exit_code):
+    """Keep the event loop alive until the native worker has actually finished."""
+    if window.busy:
+        window.hide()
+        QTimer.singleShot(50,lambda:_exit_after_work(window,app,exit_code))
+        return
+    quit_on_close=app.quitOnLastWindowClosed()
+    app.setQuitOnLastWindowClosed(False)
+    window.close()
+    app.setQuitOnLastWindowClosed(quit_on_close)
+    app.exit(exit_code)
+
+
+def launch(demo: bool = False, screenshot: str | Path | None = None, engineering_demo: str | None = None) -> int:
     """Launch the workbench, optionally capture the painted real window."""
     app = QApplication.instance()
     owns_app = app is None
@@ -939,6 +973,15 @@ def launch(demo: bool = False, screenshot: str | Path | None = None) -> int:
     window.show()
     if demo:
         window.load_demo()
+
+    capture_widget=window
+    capture_viewport=window.viewport
+    if engineering_demo:
+        window.open_engineering()
+        capture_widget=window.engineering_dialog
+        capture_viewport=capture_widget.viewport
+        capture_widget.load_example(engineering_demo)
+        capture_widget.run_current()
 
     if screenshot is not None:
         destination = Path(screenshot)
@@ -954,11 +997,7 @@ def launch(demo: bool = False, screenshot: str | Path | None = None) -> int:
                 return
             screenshot_finished = True
             capture_timeout.stop()
-            quit_on_close = app.quitOnLastWindowClosed()
-            app.setQuitOnLastWindowClosed(False)
-            window.close()
-            app.setQuitOnLastWindowClosed(quit_on_close)
-            app.exit(exit_code)
+            _exit_after_work(window,app,exit_code)
 
         def write_diagnostics(diagnostics: dict[str, object]) -> bool:
             try:
@@ -973,34 +1012,41 @@ def launch(demo: bool = False, screenshot: str | Path | None = None) -> int:
                 return False
 
         def capture() -> None:
-            if screenshot_finished or not window.viewport.is_initialized:
+            if screenshot_finished:return
+            if not capture_viewport.is_initialized or window.busy:
+                QTimer.singleShot(100,capture)
                 return
             diagnostics: dict[str, object] = {
-                "initialized": window.viewport.is_initialized
+                "initialized": capture_viewport.is_initialized
             }
             exit_code = 1
             try:
-                diagnostics = window.viewport.render_diagnostics()
+                diagnostics = capture_viewport.render_diagnostics()
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                framebuffer, diagnostics = window.viewport.capture_framebuffer()
+                framebuffer, diagnostics = capture_viewport.capture_framebuffer()
                 if not framebuffer.save(str(viewport_destination), "PNG"):
                     raise OSError(f"无法保存原始视口：{viewport_destination}")
                 diagnostics["raw_viewport_path"] = viewport_destination.name
 
                 cyan_count = int(diagnostics["cyan_pixel_count"])
                 amber_count = int(diagnostics["amber_pixel_count"])
-                diagnostics["demo_color_validation_required"] = demo
+                diagnostics["demo_color_validation_required"] = bool(demo or engineering_demo)
                 diagnostics["demo_colors_present"] = cyan_count > 20 and amber_count > 20
-                if demo and not diagnostics["demo_colors_present"]:
+                if (demo or engineering_demo) and not diagnostics["demo_colors_present"]:
                     raise RuntimeError(
                         "VTK帧缓冲未包含演示的青色移动件和琥珀色参考件"
                     )
 
-                composite = window.grab()
-                top_left = window.viewport.interactor.mapTo(
-                    window, window.viewport.interactor.rect().topLeft()
+                if engineering_demo:
+                    if capture_widget.receipt is None:
+                        raise RuntimeError('Engineering example did not produce a result')
+                    diagnostics['engineering_tool']=engineering_demo
+                    diagnostics['engineering_result']=capture_widget.receipt['result']
+                composite = capture_widget.grab()
+                top_left = capture_viewport.interactor.mapTo(
+                    capture_widget, capture_viewport.interactor.rect().topLeft()
                 )
-                target = QRect(top_left, window.viewport.interactor.size())
+                target = QRect(top_left, capture_viewport.interactor.size())
                 painter = QPainter(composite)
                 if not painter.isActive():
                     raise RuntimeError("无法创建截图合成画布")
@@ -1029,13 +1075,13 @@ def launch(demo: bool = False, screenshot: str | Path | None = None) -> int:
 
         def capture_timed_out() -> None:
             diagnostics: dict[str, object] = {
-                "initialized": window.viewport.is_initialized
+                "initialized": capture_viewport.is_initialized
             }
             try:
-                diagnostics = window.viewport.render_diagnostics()
+                diagnostics = capture_viewport.render_diagnostics()
             except Exception as exc:
                 diagnostics["diagnostics_error"] = f"{type(exc).__name__}: {exc}"
-            diagnostics["capture_error"] = "VTK viewport did not initialize within 10 seconds"
+            diagnostics["capture_error"] = "VTK viewport did not initialize or compute example within 30 seconds"
             print(diagnostics["capture_error"], file=sys.stderr)
             write_diagnostics(diagnostics)
             finish_screenshot(1)
@@ -1043,10 +1089,10 @@ def launch(demo: bool = False, screenshot: str | Path | None = None) -> int:
         def schedule_capture() -> None:
             QTimer.singleShot(0, capture)
 
-        window.viewport.rendering_ready.connect(schedule_capture)
+        capture_viewport.rendering_ready.connect(schedule_capture)
         capture_timeout.timeout.connect(capture_timed_out)
-        capture_timeout.start(10_000)
-        if window.viewport.is_initialized:
+        capture_timeout.start(30_000)
+        if capture_viewport.is_initialized:
             schedule_capture()
 
     if owns_app:
