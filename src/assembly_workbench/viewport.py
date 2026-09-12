@@ -11,7 +11,7 @@ import numpy as np
 import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
 import vtkmodules.vtkInteractionStyle  # noqa: F401
 import vtkmodules.vtkRenderingFreeType  # noqa: F401
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 from vtkmodules.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray
@@ -48,6 +48,11 @@ class AssemblyViewport(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.interactor = QVTKRenderWindowInteractor(self)
+        # A concrete OpenGL render window needs an exposed native Qt window.
+        # In particular, initializing here crashes on Windows before the
+        # top-level MainWindow has been shown. Suppress QVTK's paintEvent until
+        # _initialize_after_show has established that native lifecycle.
+        self.interactor.setUpdatesEnabled(False)
         layout.addWidget(self.interactor)
 
         self.renderer = vtkRenderer()
@@ -59,6 +64,10 @@ class AssemblyViewport(QWidget):
         self._actors: dict[str, vtkActor] = {}
         self._display_indices: dict[str, np.ndarray] = {}
         self._point_size = 3.0
+        self._initialized = False
+        self._initialize_timer = QTimer(self)
+        self._initialize_timer.setSingleShot(True)
+        self._initialize_timer.timeout.connect(self._initialize_after_show)
         self._empty_text = vtkTextActor()
         self._empty_text.SetInput(
             "Load an asset or demo to begin\n"
@@ -82,8 +91,29 @@ class AssemblyViewport(QWidget):
         self._scalar_bar.SetVisibility(False)
         self.renderer.AddActor2D(self._scalar_bar)
 
-        self.interactor.Initialize()
         self.interactor.GetRenderWindow().SetMultiSamples(4)
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().showEvent(event)
+        if not self._initialized and not self._initialize_timer.isActive():
+            self._initialize_timer.start(0)
+
+    def _initialize_after_show(self) -> None:
+        if self._initialized:
+            return
+        if not self.isVisible():
+            return
+
+        top_level = self.window().windowHandle()
+        if top_level is None or not top_level.isExposed():
+            self._initialize_timer.start(16)
+            return
+
+        self.interactor.setUpdatesEnabled(True)
+        self.interactor.Initialize()
+        self.interactor.Start()
+        self._initialized = True
+        self.interactor.GetRenderWindow().Render()
 
     def set_assets(
         self,
@@ -224,12 +254,8 @@ class AssemblyViewport(QWidget):
         self.render()
 
     def render(self) -> None:
-        if self.isVisible():
+        if self._initialized and self.isVisible():
             self.interactor.GetRenderWindow().Render()
-
-    def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
-        self.interactor.Finalize()
-        super().closeEvent(event)
 
 
 Viewport = AssemblyViewport

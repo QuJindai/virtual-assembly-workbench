@@ -70,11 +70,11 @@ def test_export_records_actual_counts_and_escapes_html(tmp_path):
     result = measure_deviation(source,target,tolerance_mm=1)
     paths = export_report(tmp_path/'report',source,target,result)
     assert all(p.exists() for p in paths)
-    data = json.loads((tmp_path/'report/report.json').read_text())
+    data = json.loads((tmp_path/'report/report.json').read_text(encoding='utf-8'))
     assert data['deviation']['statistics']['within_fraction'] == .5
     assert data['units'] == 'mm'
-    assert '<script>alert(1)</script>' not in (tmp_path/'report/report.html').read_text()
-    assert len((tmp_path/'report/deviations.csv').read_text().splitlines()) == 3
+    assert '<script>alert(1)</script>' not in (tmp_path/'report/report.html').read_text(encoding='utf-8')
+    assert len((tmp_path/'report/deviations.csv').read_text(encoding='utf-8-sig').splitlines()) == 3
 
 
 def test_stale_measurement_is_not_exported(tmp_path):
