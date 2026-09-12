@@ -23,7 +23,7 @@ jobs:
       - name: Install desktop libraries
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y xvfb libegl1 libgl1-mesa-dri libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 fonts-noto-cjk
+          sudo apt-get install -y xvfb libegl1 libgl1-mesa-dri libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 libxcb-shape0 fonts-noto-cjk
       - name: Install locked dependencies
         run: |
           python -m pip install -r requirements.lock
@@ -63,14 +63,29 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install --no-deps -e .
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Native engine and real Qt workflow tests
-        run: python -m pytest -s -q --junitxml=artifacts/windows-tests.xml
       - name: Collect licenses and build portable executable
         run: |
           python scripts/collect_licenses.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m PyInstaller --noconfirm packaging/workbench.spec
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Supply OpenGL to the GPU-less CI runner
+        run: |
+          $mesaArchive = Join-Path $env:RUNNER_TEMP 'mesa.7z'
+          $mesaRoot = Join-Path $env:RUNNER_TEMP 'mesa'
+          Invoke-WebRequest 'https://github.com/pal1000/mesa-dist-win/releases/download/26.1.7/mesa3d-26.1.7-release-msvc.7z' -OutFile $mesaArchive
+          $expected = 'c6e90c3117233b66f7816df05026a5fb0f88eaf7829bd07a1724b981487ec0bb'
+          if ((Get-FileHash $mesaArchive -Algorithm SHA256).Hash.ToLower() -ne $expected) { throw 'Mesa checksum mismatch' }
+          7z x $mesaArchive "-o$mesaRoot" -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $driver = Join-Path $mesaRoot 'x64'
+          if (!(Test-Path (Join-Path $driver 'opengl32.dll'))) { throw 'Mesa OpenGL driver missing' }
+          Copy-Item "$driver/*.dll" "$env:pythonLocation/"
+          Copy-Item "$driver/*.dll" 'dist/AssemblyWorkbench/'
+          "MESA_CI_DRIVER=$driver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "GALLIUM_DRIVER=llvmpipe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Native engine and real Qt workflow tests
+        run: python -m pytest -s -q --junitxml=artifacts/windows-tests.xml
       - name: Exercise packaged executable
         run: |
           & dist/AssemblyWorkbench/AssemblyWorkbench.exe --self-test artifacts/packaged-self-test
@@ -78,6 +93,9 @@ jobs:
           & dist/AssemblyWorkbench/AssemblyWorkbench.exe --demo --screenshot artifacts/workbench-windows.png
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (!(Test-Path artifacts/workbench-windows.png)) { throw 'Packaged screenshot missing' }
+          # Mesa supplies the test machine's OpenGL implementation, like a GPU
+          # driver on a user's desktop. It is not an application dependency.
+          Get-ChildItem "$env:MESA_CI_DRIVER/*.dll" | ForEach-Object { Remove-Item (Join-Path 'dist/AssemblyWorkbench' $_.Name) }
           Copy-Item README.md, LICENSE, THIRD_PARTY_NOTICES.md dist/AssemblyWorkbench/
           Compress-Archive -Path dist/AssemblyWorkbench -DestinationPath AssemblyWorkbench-Windows-x64.zip
           $hash = (Get-FileHash AssemblyWorkbench-Windows-x64.zip -Algorithm SHA256).Hash.ToLower()

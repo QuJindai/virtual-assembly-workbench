@@ -6,7 +6,7 @@
 
 ## 开始使用
 
-Windows 10/11 x64：在发行页下载 `AssemblyWorkbench-Windows-x64.zip`，完整解压后双击 `AssemblyWorkbench.exe`。整个目录需要一起保留。便携包包含 Python 及原生依赖，运行时无需联网、账户或服务器。发行页只发布通过程序自检和窗口启动检查的构建。
+Windows 10/11 x64：在发行页下载 `AssemblyWorkbench-Windows-x64.zip`，完整解压后双击 `AssemblyWorkbench.exe`。整个目录需要一起保留。便携包包含 Python 及原生依赖，运行时无需联网、账户或服务器。三维视图需要支持 **OpenGL 3.2 或更高版本**的显卡驱动；无显卡的 CI 构建机使用固定版本、校验哈希的 Mesa 软件驱动验证。发行页只发布通过程序自检和窗口启动检查的构建。
 
 源码运行需要 **64 位 Python 3.12**，Windows 或有桌面/OpenGL 环境的 Linux：
 
