@@ -378,6 +378,7 @@ class MainWindow(QMainWindow):
             QPushButton#primaryButton:hover { background: #0988a6; }
             QLabel#resultCard { background: #0a151e; border-left: 3px solid #2fc3d7; padding: 10px; color: #b9ccd9; }
             QHeaderView::section { background: #172734; color: #a9bdca; padding: 5px; border: 0; border-right: 1px solid #2b4253; }
+            QTableWidget { alternate-background-color: #132532; }
             QStatusBar { background: #071a2e; color: #8ea9ba; }
             QSplitter::handle { background: #263b4b; }
             """
