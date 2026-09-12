@@ -1,0 +1,119 @@
+name: Test and build desktop
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install desktop libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y xvfb libegl1 libgl1-mesa-dri libxcb-cursor0 libxkbcommon-x11-0 fonts-noto-cjk
+      - name: Install locked dependencies
+        run: |
+          python -m pip install -r requirements.lock
+          python -m pip install --no-deps -e .
+      - name: Native engine and real Qt workflow tests
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a -s '-screen 0 1600x1000x24' python -m pytest -q --junitxml=artifacts/linux-tests.xml
+      - name: Self-test and render desktop
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python -m assembly_workbench --self-test artifacts/linux-self-test
+          xvfb-run -a -s '-screen 0 1600x1000x24' python -m assembly_workbench --demo --screenshot artifacts/workbench-linux.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-validation
+          path: artifacts/
+
+  windows-build:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install locked dependencies
+        run: |
+          python -m pip install -r requirements.lock
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install --no-deps -e .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Native engine and real Qt workflow tests
+        run: python -m pytest -q --junitxml=artifacts/windows-tests.xml
+      - name: Collect licenses and build portable executable
+        run: |
+          python scripts/collect_licenses.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m PyInstaller --noconfirm packaging/workbench.spec
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise packaged executable
+        run: |
+          & dist/AssemblyWorkbench/AssemblyWorkbench.exe --self-test artifacts/packaged-self-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & dist/AssemblyWorkbench/AssemblyWorkbench.exe --demo --screenshot artifacts/workbench-windows.png
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path artifacts/workbench-windows.png)) { throw 'Packaged screenshot missing' }
+          Copy-Item README.md, LICENSE, THIRD_PARTY_NOTICES.md dist/AssemblyWorkbench/
+          Compress-Archive -Path dist/AssemblyWorkbench -DestinationPath AssemblyWorkbench-Windows-x64.zip
+          $hash = (Get-FileHash AssemblyWorkbench-Windows-x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  AssemblyWorkbench-Windows-x64.zip" | Set-Content -Encoding ascii SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-validation
+          path: artifacts/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable
+          path: |
+            AssemblyWorkbench-Windows-x64.zip
+            SHA256SUMS.txt
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [linux-tests, windows-build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-portable
+          path: release
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-validation
+          path: evidence
+      - name: Publish tested preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: v0.1.0-build.${{ github.run_number }}
+        run: |
+          gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --prerelease \
+            --title "Assembly Workbench $RELEASE_TAG" --notes-file docs/release-notes.md \
+            release/AssemblyWorkbench-Windows-x64.zip release/SHA256SUMS.txt \
+            evidence/workbench-windows.png evidence/packaged-self-test/self-test.json
