@@ -6,6 +6,7 @@ import hashlib
 import time
 import uuid
 import re
+import json
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -45,6 +46,8 @@ class Dataset:
     cad_shape: object | None = None
     transform: np.ndarray = field(default_factory=lambda: np.eye(4))
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    point_ids: list[str] | None = None
+    point_scope: str | None = None
 
     def __post_init__(self):
         self.points = points_array(self.points).copy()
@@ -68,8 +71,21 @@ class Dataset:
             raise ValueError('网格缺少三角形。')
         if self.kind == 'cad' and (self.cad_shape is None or self.cad_shape.IsNull()):
             raise ValueError('CAD形状为空。')
+        self.validate_labels()
+
+    def validate_labels(self):
+        if self.point_ids is not None:
+            if (self.kind != 'cloud' or len(self.point_ids) != len(self.points) or
+                    any(not isinstance(x, str) or not x or len(x) > 512 for x in self.point_ids) or
+                    len(set(self.point_ids)) != len(self.point_ids) or
+                    not isinstance(self.point_scope, str) or not self.point_scope or len(self.point_scope) > 4096):
+                raise ValueError('测点编号必须唯一、完整，并具有明确的测点范围。')
+            self.point_ids = list(self.point_ids)
+        elif self.point_scope is not None:
+            raise ValueError('测点范围需要对应的测点编号。')
 
     def world_points(self):
+        self.validate_labels()
         t = validate_transform(self.transform)
         return self.points @ t[:3, :3].T + t[:3, 3]
 
@@ -80,6 +96,8 @@ def signature(asset):
         if a is not None:
             h.update(np.ascontiguousarray(a).tobytes())
     h.update(asset.id.encode('ascii'))
+    if asset.point_ids is not None:
+        h.update(json.dumps([asset.point_scope, asset.point_ids], ensure_ascii=False).encode('utf-8'))
     return h.hexdigest()
 
 
@@ -130,14 +148,23 @@ class DeviationResult:
     target_transform: np.ndarray
     source_fingerprint: str = ''
     target_fingerprint: str = ''
+    target_indices: np.ndarray | None = None
+    matched_count: int | None = None
+    reference_count: int | None = None
 
     @property
     def statistics(self):
         d = self.distances_mm
-        return dict(rms_mm=float(np.sqrt(np.mean(d * d))), p95_mm=float(np.percentile(d, 95)),
+        result = dict(rms_mm=float(np.sqrt(np.mean(d * d))), p95_mm=float(np.percentile(d, 95)),
                     max_mm=float(np.max(d)), mean_mm=float(np.mean(d)),
                     within_fraction=float(np.mean(d <= self.tolerance_mm)),
                     sample_count=len(d), total_count=self.total_count)
+        if self.matched_count is not None:
+            result.update(matched_count=self.matched_count, unmatched_count=self.total_count-self.matched_count)
+            result.update(reference_count=self.reference_count,
+                          unmatched_reference_count=self.reference_count-self.matched_count,
+                          reference_coverage=self.matched_count/self.reference_count)
+        return result
 
     def to_dict(self):
         result = _jsonable(asdict(self))
@@ -351,7 +378,20 @@ def measure_deviation(source, target, tolerance_mm=.2, max_samples=5000):
     world = source.world_points()
     indices = np.linspace(0, len(world)-1, min(len(world), max_samples), dtype=np.int64)
     sample = world[indices]
-    if target.kind == 'cad':
+    target_indices, matched_count = None, None
+    if source.point_ids is not None and target.point_ids is not None:
+        if source.point_scope != target.point_scope:
+            raise ValueError('测点范围不同，不能按编号比较；请选择同一检测计划和零件。')
+        lookup = {key: i for i, key in enumerate(target.point_ids)}
+        eligible = np.asarray([i for i, key in enumerate(source.point_ids) if key in lookup], dtype=np.int64)
+        matched_count = len(eligible)
+        if not matched_count:
+            raise ValueError('两组数据没有相同测点编号。')
+        indices = eligible[np.linspace(0, matched_count-1, min(matched_count, max_samples), dtype=np.int64)]
+        target_indices = np.asarray([lookup[source.point_ids[i]] for i in indices], dtype=np.int64)
+        distances = np.linalg.norm(world[indices] - target.world_points()[target_indices], axis=1)
+        method = 'feature_id'
+    elif target.kind == 'cad':
         distances, method = _cad_distances(sample, target), 'cad_exact'
     elif target.triangles is not None:
         distances, method = _mesh_distances(sample, target), 'mesh_surface'
@@ -362,4 +402,5 @@ def measure_deviation(source, target, tolerance_mm=.2, max_samples=5000):
         raise ValueError('距离求解返回了无效结果。')
     return DeviationResult(source.id, target.id, indices, distances, method, float(tolerance_mm), len(world),
                            time.perf_counter()-start, source.transform.copy(), target.transform.copy(),
-                           signature(source), signature(target))
+                           signature(source), signature(target), target_indices, matched_count,
+                           len(target.points) if matched_count is not None else None)

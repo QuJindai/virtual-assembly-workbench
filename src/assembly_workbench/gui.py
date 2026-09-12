@@ -50,6 +50,7 @@ from .core import (
     rigid_transform,
 )
 from .io import export_report, load_dataset, load_project, save_project
+from .emma import EmmaImport, is_emma_csv, load_emma
 from .viewport import AssemblyViewport
 
 
@@ -392,7 +393,7 @@ class MainWindow(QMainWindow):
             return
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "导入几何",
+            "导入几何或eMMA测量数据",
             "",
             "支持的几何 (*.csv *.xyz *.pcd *.ply *.stl *.obj *.step *.stp *.iges *.igs);;所有文件 (*)",
         )
@@ -408,16 +409,30 @@ class MainWindow(QMainWindow):
             unit = "m" if label == "米 (m)" else "mm"
         self._start_operation(
             "正在导入几何…",
-            lambda: load_dataset(path, unit=unit),
+            lambda: load_emma(path, unit=unit) if is_emma_csv(path) else load_dataset(path, unit=unit),
             self._finish_import,
         )
 
-    def _finish_import(self, asset: Dataset) -> None:
-        self.assets.append(asset)
+    def _finish_import(self, asset: Dataset | EmmaImport) -> None:
+        imported = asset.assets if isinstance(asset, EmmaImport) else [asset]
+        if len(self.assets) + len(imported) > 100:
+            self._show_error("资源数超限", "导入后资源数将超过100，请另建项目或减少样本。")
+            return
+        self.assets.extend(imported)
         self.project_path = None
         self._invalidate_results()
         self._refresh_asset_widgets()
-        self.statusBar().showMessage(f"已导入 {asset.name} · {len(asset.points):,} 点", 6000)
+        if isinstance(asset, EmmaImport):
+            stats = asset.summary
+            summary = (f"eMMA：{stats['actual_assets']}组实测、{stats['nominal_assets']}组名义；"
+                       f"{stats['missing_xyz_rows']}行无完整XYZ；"
+                       f"{stats['inferred_actual_rows']}行依据样本/时间识别为实测；"
+                       f"{stats['invalid_xyz_rows']}行无效坐标、{stats['unknown_role_rows']}行角色不明；"
+                       f"{stats['conflicting_keys']}个冲突编号")
+            self._append_history("导入", stats['source_file'], "", summary, stats)
+            self.statusBar().showMessage(summary)
+        else:
+            self.statusBar().showMessage(f"已导入 {asset.name} · {len(asset.points):,} 点", 6000)
 
     def open_project(self) -> None:
         if self.busy:
@@ -596,10 +611,14 @@ class MainWindow(QMainWindow):
         self.deviation_summary.setText(
             f"RMS {stats['rms_mm']:.4f} mm · P95 {stats['p95_mm']:.4f} mm\n"
             f"最大 {stats['max_mm']:.4f} mm · 平均 {stats['mean_mm']:.4f} mm\n"
-            f"公差内 {stats['within_fraction']:.1%} · "
+            f"阈值内 {stats['within_fraction']:.1%} · "
             f"采样 {int(stats['sample_count']):,}/{int(stats['total_count']):,}\n"
             f"方法：{result.method} · {result.elapsed_s:.3f} s"
         )
+        if result.method == 'feature_id':
+            self.deviation_summary.setText(self.deviation_summary.text() +
+                f"\n编号对应 {stats['matched_count']:,} · 实测无对应 {stats['unmatched_count']:,}"
+                f"\n参考覆盖 {stats['reference_coverage']:.1%} · 参考无对应 {stats['unmatched_reference_count']:,}")
         source = self._asset_by_id(result.source_id)
         target = self._asset_by_id(result.target_id)
         history_result = result.to_dict()
@@ -607,11 +626,12 @@ class MainWindow(QMainWindow):
         # compact audit history so large measurements remain saveable.
         history_result.pop("indices", None)
         history_result.pop("distances_mm", None)
+        history_result.pop("target_indices", None)
         self._append_history(
             "deviation",
             source.name if source else result.source_id,
             target.name if target else result.target_id,
-            f"RMS {stats['rms_mm']:.4f} mm · P95 {stats['p95_mm']:.4f} mm · 公差内 {stats['within_fraction']:.1%}",
+            f"RMS {stats['rms_mm']:.4f} mm · P95 {stats['p95_mm']:.4f} mm · 阈值内 {stats['within_fraction']:.1%}",
             history_result,
         )
         self._refresh_viewport(fit=False)
@@ -791,7 +811,9 @@ class MainWindow(QMainWindow):
             str(row.get("summary", "")),
         )
         for column, value in enumerate(values):
-            self.history_table.setItem(index, column, QTableWidgetItem(value))
+            item = QTableWidgetItem(value)
+            item.setToolTip(value)
+            self.history_table.setItem(index, column, item)
         self.history_table.scrollToBottom()
 
     def _refresh_controls(self) -> None:

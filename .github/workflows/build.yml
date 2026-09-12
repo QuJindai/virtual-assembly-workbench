@@ -135,7 +135,7 @@ jobs:
       - name: Publish tested preview
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: v0.1.0-build.${{ github.run_number }}
+          RELEASE_TAG: v0.1.1-build.${{ github.run_number }}
         run: |
           gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --prerelease \
             --title "Assembly Workbench $RELEASE_TAG" --notes-file docs/release-notes.md \

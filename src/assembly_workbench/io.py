@@ -137,6 +137,8 @@ def load_dataset(path, unit='mm'):
     if not path.is_file() or not 0 < path.stat().st_size <= MAX_FILE_BYTES:
         raise ValueError('文件不存在、为空或超过512 MiB。')
     extension = path.suffix.lower()
+    if extension in ('.catpart', '.catproduct', '.catdrawing', '.3dxml'):
+        raise ValueError('当前不支持CATIA原生格式；请使用CATIA或合规转换器导出STEP/IGES。改文件扩展名不能转换格式。')
     scale = 1000. if unit == 'm' else 1.
     if extension in ('.csv', '.xyz', '.txt', '.pts'):
         points = _text_points(path, ',' if extension == '.csv' else None) * scale
@@ -178,7 +180,8 @@ def save_project(path, assets, history=None):
     path = Path(path)
     if not assets or len(assets) > 100 or len({a.id for a in assets}) != len(assets):
         raise ValueError('工程需包含1–100个不同的几何对象。')
-    manifest = dict(format='assembly-workbench', version=1, units='mm', app_version=__version__, assets=[], history=history or [])
+    version = 2 if any(a.point_ids is not None for a in assets) else 1
+    manifest = dict(format='assembly-workbench', version=version, units='mm', app_version=__version__, assets=[], history=history or [])
     # Validate JSON before opening/replacing any destination.
     json.dumps(manifest, allow_nan=False)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -193,6 +196,9 @@ def save_project(path, assets, history=None):
                              transform=asset.transform.tolist(), source_name=Path(asset.source_path).name if asset.source_path else None)
                 data = io.BytesIO()
                 arrays = dict(points=asset.points)
+                if asset.point_ids is not None:
+                    arrays['point_ids'] = np.asarray(asset.point_ids, dtype=str)
+                    entry['point_scope'] = asset.point_scope
                 if asset.triangles is not None:
                     arrays['triangles'] = asset.triangles
                 np.savez(data, **arrays)
@@ -238,7 +244,7 @@ def load_project(path):
             if archive.getinfo('manifest.json').file_size > MAX_MANIFEST_BYTES:
                 raise ValueError('工程清单过大。')
             manifest = _json(archive.read('manifest.json'))
-            if manifest.get('format') != 'assembly-workbench' or manifest.get('version') != 1 or manifest.get('units') != 'mm':
+            if manifest.get('format') != 'assembly-workbench' or manifest.get('version') not in (1, 2) or manifest.get('units') != 'mm':
                 raise ValueError('不支持的工程版本或单位。')
             entries = manifest.get('assets')
             if not isinstance(entries, list) or not 1 <= len(entries) <= 100:
@@ -257,6 +263,7 @@ def load_project(path):
                 with np.load(io.BytesIO(content), allow_pickle=False) as arrays:
                     points = arrays['points']
                     triangles = arrays['triangles'] if 'triangles' in arrays else None
+                    point_ids = arrays['point_ids'].tolist() if 'point_ids' in arrays else None
                 shape = None
                 if entry['kind'] == 'cad':
                     from OCP.TopoDS import TopoDS_Shape
@@ -265,7 +272,8 @@ def load_project(path):
                     shape = TopoDS_Shape()
                     BRepTools.Read_s(shape, io.BytesIO(archive.read(f'{asset_id}.brep')), BRep_Builder())
                 assets.append(Dataset(entry['name'], points, entry['kind'], triangles,
-                                      entry.get('source_name'), shape, entry['transform'], asset_id))
+                                      entry.get('source_name'), shape, entry['transform'], asset_id,
+                                      point_ids, entry.get('point_scope')))
             history = manifest.get('history', [])
             if not isinstance(history, list) or any(not isinstance(row, dict) for row in history):
                 raise ValueError('工程历史记录无效。')
@@ -292,17 +300,37 @@ def export_report(folder, source, target, deviation, registrations=None):
                 target=dict(id=target.id, name=target.name, kind=target.kind, transform=target.transform.tolist()),
                 deviation=deviation.to_dict(),
                 registrations=[r.to_dict() if hasattr(r, 'to_dict') else r for r in (registrations or [])],
-                interpretation='Unsigned geometric distance. Tolerance coverage is not a manufacturing acceptance verdict. Cloud reference uses nearest points, not a continuous surface.')
+                interpretation='Unsigned geometric distance. Tolerance coverage is not a manufacturing acceptance verdict. '
+                'feature_id matches labeled feature positions in the same scope; other clouds use nearest points, not a continuous surface.')
+    if deviation.target_indices is not None:
+        data['deviation']['feature_ids'] = [source.point_ids[i] for i in deviation.indices]
+        source_keys, target_keys = set(source.point_ids), set(target.point_ids)
+        data['deviation']['unmatched_source_ids'] = sorted(source_keys-target_keys)
+        data['deviation']['unmatched_reference_ids'] = sorted(target_keys-source_keys)
+        data['source']['point_scope'] = source.point_scope
+        data['target']['point_scope'] = target.point_scope
     serialized = json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False)
     points = source.world_points()
+    labeled = deviation.target_indices is not None
+    target_points = target.world_points() if labeled else None
     paths = [folder / name for name in names]
     with paths[0].open('x', encoding='utf-8') as stream:
         stream.write(serialized)
     with paths[1].open('x', newline='', encoding='utf-8-sig') as stream:
         writer = csv.writer(stream)
-        writer.writerow(['point_index', 'x_mm', 'y_mm', 'z_mm', 'unsigned_distance_mm', 'within_threshold'])
-        for index, d in zip(deviation.indices, deviation.distances_mm):
-            writer.writerow([int(index), *points[index], float(d), int(d <= deviation.tolerance_mm)])
+        header = ['point_index', 'x_mm', 'y_mm', 'z_mm', 'unsigned_distance_mm', 'within_threshold']
+        if labeled:
+            header += ['feature_id', 'target_point_index', 'delta_x_mm', 'delta_y_mm', 'delta_z_mm']
+        writer.writerow(header)
+        for position, (index, d) in enumerate(zip(deviation.indices, deviation.distances_mm)):
+            row = [int(index), *points[index], float(d), int(d <= deviation.tolerance_mm)]
+            if labeled:
+                target_index = int(deviation.target_indices[position])
+                feature_id = source.point_ids[index]
+                if feature_id.startswith(('=', '+', '-', '@', '\t', '\r')):
+                    feature_id = "'" + feature_id
+                row += [feature_id, target_index, *(points[index]-target_points[target_index])]
+            writer.writerow(row)
     with paths[2].open('x', encoding='utf-8') as stream:
         np.savetxt(stream, points, fmt='%.9f')
     stats = deviation.statistics
@@ -318,7 +346,7 @@ def export_report(folder, source, target, deviation, registrations=None):
 <p>方法：{escape(deviation.method)}；绝对距离阈值：{deviation.tolerance_mm:g} mm；采样 {len(deviation.indices):,} / {deviation.total_count:,} 点。</p>
 <table>{rows}</table><h2>绝对距离分布</h2><svg viewBox="0 0 600 220" role="img" aria-label="距离直方图">{bars}<text x="40" y="210">{bins[0]:.4g} mm</text><text x="490" y="210">{bins[-1]:.4g} mm</text></svg>
 <h2>移动件变换矩阵</h2><pre>{escape(np.array2string(source.transform, precision=9))}</pre>
-<p class="muted">结果是无符号几何距离。点云基准采用最近点距离；网格采用三角面距离；CAD采用OCCT精确表面距离。阈值内比例仅描述本次采样结果，不代表工艺放行、干涉判断或计量认证。未测点不参与统计。</p></html>'''
+<p class="muted">结果是无符号几何距离。feature_id按同一检测计划和零件的测点编号对应，CSV保留坐标差；reference_coverage为具有对应实测坐标的参考测点比例，未对应编号见JSON。其他点云采用最近点距离；网格采用三角面距离；CAD采用OCCT精确表面距离。阈值内比例仅描述本次采样结果，不代表工艺放行、干涉判断或计量认证。未测点不参与统计。</p></html>'''
     with paths[3].open('x', encoding='utf-8') as stream:
         stream.write(document)
     return paths

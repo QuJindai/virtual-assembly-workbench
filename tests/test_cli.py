@@ -1,6 +1,8 @@
 import json
 import subprocess
 import sys
+from pathlib import Path
+import tomllib
 
 
 def test_headless_self_test_exercises_export_project_and_cad(tmp_path):
@@ -27,7 +29,8 @@ def test_version_does_not_launch_gui():
         capture_output=True, text=True, timeout=10,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip().endswith("0.1.0")
+    project = tomllib.loads((Path(__file__).resolve().parents[1]/'pyproject.toml').read_text())
+    assert result.stdout.strip() == f"Assembly Workbench {project['project']['version']}"
 
 
 def test_screenshot_requires_demo_and_reports_invalid_arguments():

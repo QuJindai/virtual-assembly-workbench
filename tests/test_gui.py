@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QFileDialog, QToolBar
+from PySide6.QtWidgets import QFileDialog, QToolBar, QInputDialog
 
 from assembly_workbench.gui import MainWindow
 
@@ -98,6 +98,32 @@ def test_parameter_controls_do_not_offer_values_rejected_by_engine(window):
     """Catches GUI parameter ranges that exceed the core's validated limits."""
     assert window.iteration_spin.maximum() == 500
     assert window.max_samples_spin.maximum() == 2_000_000
+
+
+def test_emma_toolbar_import_and_feature_measurement(window, qtbot, monkeypatch, tmp_path):
+    import csv
+    path = tmp_path/'synthetic-emma.csv'
+    header = ['InspectionTask','InspectionPlan','PartSingle','IPE.Name','IPE.Type',
+              'IPE.Origin.X','IPE.Origin.Y','IPE.Origin.Z','InspectionCategories',
+              'Component.ID','History.DateTime']
+    with path.open('w',encoding='utf-8-sig',newline='') as stream:
+        writer = csv.writer(stream); writer.writerow(header)
+        for i, xyz in enumerate([[0,0,0],[10,0,0],[0,10,0]]):
+            writer.writerow(['synthetic','plan','part',str(i),'FPT',*xyz,'MPT','','2026-01-01'])
+            writer.writerow(['synthetic','plan','part',str(i),'FPT',xyz[0]+1,xyz[1],xyz[2],'A','sample','2026-01-02'])
+    monkeypatch.setattr(QFileDialog,'getOpenFileName',lambda *a,**k:(str(path),'CSV'))
+    monkeypatch.setattr(QInputDialog,'getItem',lambda *a,**k:('毫米 (mm)',True))
+    window.import_action.trigger()
+    _wait_for_work(window,qtbot)
+    assert len(window.assets) == 2
+    assert window.assets[0].point_ids == ['FPT:0','FPT:1','FPT:2']
+    assert 'eMMA' in window.history[0]['summary']
+    window.run_measurement()
+    _wait_for_work(window,qtbot)
+    assert window.last_deviation.method == 'feature_id'
+    np.testing.assert_allclose(window.last_deviation.distances_mm,[1,1,1])
+    assert '编号对应 3' in window.deviation_summary.text()
+    assert 'target_indices' not in window.history[-1]['result']
 
 
 def test_toolbar_actions_show_text_beside_icons(window):
