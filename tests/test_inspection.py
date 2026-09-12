@@ -70,3 +70,26 @@ def test_axis_normalization_cannot_overflow_to_zero_and_false_pass():
     r=evaluate_points(s,t,[dict(name='z',point_id='a',axis=[0,0,1e308],lower_mm=0,upper_mm=.1)])
     assert r['rows'][0]['value_mm']==pytest.approx(.2)
     assert r['rows'][0]['status']=='fail'
+
+
+@pytest.mark.parametrize('actual,limit,status',[(10.3,.3,'unjudged'),(10.2,.2,'unjudged'),(10.30001,.3,'fail'),(10.29999,.3,'pass'),(10.25,.25,'pass')])
+def test_floating_point_boundary_is_visible_without_relaxing_limits(actual,limit,status):
+    from assembly_workbench.inspection import evaluate_points
+    s=Dataset('a',[[actual,0,0]],point_ids=['p'],point_scope='p')
+    t=Dataset('n',[[10,0,0]],point_ids=['p'],point_scope='p')
+    r=evaluate_points(s,t,[dict(name='x',point_id='p',axis=[1,0,0],lower_mm=0,upper_mm=limit)])
+    assert r['rows'][0]['status']==status
+    assert r['rows'][0]['upper_mm']==limit
+    assert r['statistics']['numerical_boundary_count']==int(status=='unjudged')
+    if status=='unjudged':assert r['rows'][0]['unjudged_reason']=='floating_point_boundary'
+
+
+@pytest.mark.parametrize('actual,nominal,lo,hi,status',[(.25,0,.25-np.spacing(.25),.25,'pass'),(1e-17,0,0,1e-18,'fail'),(1e308,1e308,0,1,'pass')])
+def test_roundoff_estimate_has_no_fixed_length_floor_or_overflow(actual,nominal,lo,hi,status):
+    import json
+    from assembly_workbench.inspection import evaluate_points
+    s=Dataset('a',[[actual,0,0]],point_ids=['p'],point_scope='p')
+    t=Dataset('n',[[nominal,0,0]],point_ids=['p'],point_scope='p')
+    r=evaluate_points(s,t,[dict(name='x',point_id='p',axis=[1,0,0],lower_mm=lo,upper_mm=hi)])
+    assert r['rows'][0]['status']==status
+    json.dumps(r,allow_nan=False)

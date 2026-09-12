@@ -7,7 +7,7 @@ import numpy as np
 from PySide6.QtCore import Qt,QTimer
 from PySide6.QtWidgets import (QCheckBox,QComboBox,QDialog,QDialogButtonBox,QDoubleSpinBox,
     QFileDialog,QFormLayout,QHBoxLayout,QHeaderView,QLabel,QLineEdit,QListWidget,
-    QMessageBox,QPushButton,QScrollArea,QSpinBox,QSplitter,QStackedWidget,QTableWidget,
+    QMessageBox,QPushButton,QScrollArea,QSizePolicy,QSpinBox,QSplitter,QStackedWidget,QTableWidget,
     QTableWidgetItem,QVBoxLayout,QWidget)
 
 from .core import Dataset
@@ -29,7 +29,9 @@ def _spin(value=0.,lo=-1e7,hi=1e7,decimals=12):
 def _vector(values):
     widget=QWidget();layout=QHBoxLayout(widget);layout.setContentsMargins(0,0,0,0)
     spins=[_spin(v) for v in values]
-    for axis,spin in zip('XYZ',spins):layout.addWidget(QLabel(axis));layout.addWidget(spin)
+    for axis,spin in zip('XYZ',spins):
+        spin.setMinimumWidth(65);spin.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
+        layout.addWidget(QLabel(axis));layout.addWidget(spin,1)
     return widget,spins
 
 
@@ -66,6 +68,33 @@ def _write_table(table,rows):
 
 def _cell(table,row,col,default=''):
     item=table.item(row,col);return item.text().strip() if item else default
+
+
+def _display(value):
+    if value is None:return ''
+    if isinstance(value,float):return f'{value:.6g}'
+    if isinstance(value,list):return '['+', '.join(_display(x) for x in value)+']'
+    if isinstance(value,dict):return json.dumps(value,ensure_ascii=False)
+    return str(value)
+
+
+def _feature_rows(result):
+    reference=result.get('comparison',{}).get('reference',{})
+    rows=[]
+    def metric(label,actual,nominal=None,unit='mm'):
+        rows.append({'测量项目':label,'实测':actual,'参考':nominal,
+                     '差值':actual-nominal if isinstance(actual,(int,float)) and isinstance(nominal,(int,float)) else None,'单位':unit})
+    if 'radius_mm' in result:metric('拟合直径',2*result['radius_mm'],2*reference['radius_mm'] if 'radius_mm' in reference else None)
+    if result['kind'] in ('circle','sphere'):
+        for i,axis in enumerate('XYZ'):metric('中心 '+axis,result['center'][i],reference.get('center',[None]*3)[i])
+    comparison=result.get('comparison',{})
+    for key,label,unit in [('axis_angle_deg','轴 / 法向夹角','°'),('normal_offset_at_source_center_mm','实测中心处法向偏移','mm'),('infinite_axis_distance_mm','无限轴线最短距离','mm')]:
+        if key in comparison:metric(label,comparison[key],unit=unit)
+    metric('拟合 RMS',result['rms_mm'],reference.get('rms_mm'))
+    metric('最大拟合残差',result['max_mm'],reference.get('max_mm'))
+    metric('参与拟合点数',result['count'],reference.get('count'),unit='点')
+    if 'direction' in result:metric('轴 / 法向 XYZ',result['direction'],reference.get('direction'),unit='单位向量')
+    return rows
 
 
 class EngineeringDialog(QDialog):
@@ -128,6 +157,11 @@ class EngineeringDialog(QDialog):
         for widget in self.inputs.findChildren(QCheckBox):widget.toggled.connect(self.invalidate)
         self.refresh_assets();self.refresh_history();self._tool_changed()
         self.target_combo.currentIndexChanged.connect(self._sync_control_unit)
+        for widget in self.inputs.findChildren(QWidget):
+            form=widget.layout()
+            if isinstance(form,QFormLayout):form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.inputs.setMinimumWidth(0);self.inputs.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred)
+        self.hint.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred)
 
     def _build_pairs(self):
         page=QWidget();layout=QVBoxLayout(page);layout.setContentsMargins(0,0,0,0)
@@ -380,11 +414,12 @@ class EngineeringDialog(QDialog):
 
     def _completed(self,receipt):
         self.receipt=receipt;r=receipt['result'];rows=result_rows(receipt)
+        if receipt['tool']=='feature':rows=_feature_rows(r)
         columns=list(dict.fromkeys(k for row in rows for k in row))
         self.results_table.setColumnCount(len(columns));self.results_table.setHorizontalHeaderLabels(columns)
-        _write_table(self.results_table,[[json.dumps(row.get(k),ensure_ascii=False) if isinstance(row.get(k),(dict,list)) else row.get(k) for k in columns] for row in rows[:2000]])
+        _write_table(self.results_table,[[_display(row.get(k)) for k in columns] for row in rows[:2000]])
         summary=LABELS[receipt['tool']]+'完成'
-        if 'rms_mm' in r:summary+=f" · RMS {r['rms_mm']:.5f} mm"
+        if 'rms_mm' in r:summary+=f" · RMS {r['rms_mm']:.6g} mm"
         if 'radius_mm' in r:summary+=f" · 直径 {2*r['radius_mm']:.5f} mm"
         if 'rank' in r:summary+=f" · 约束秩 {r['rank']}"
         if any(r.get('at_bounds',[])):summary+=' · 部分调整量达到行程上限'
@@ -398,6 +433,7 @@ class EngineeringDialog(QDialog):
         if 'state' in r:summary+=' · '+{'clear':'实体分离','contact':'实体接触','interference':'存在实体干涉'}.get(r['state'],r['state'])
         if receipt['tool']=='inspection':
             s=r['statistics'];summary+=f" · 满足 {s['pass_count']} / 超限 {s['fail_count']} / 缺测 {s['missing_count']} / 未判 {s['unjudged_count']}"
+            if s.get('numerical_boundary_count'):summary+=f"（其中 {s['numerical_boundary_count']} 项位于浮点数值边界，需复核原始精度）"
         if len(rows)>2000:summary+=f' · 表中显示前2000行，报告含全部{len(rows)}行'
         warnings=r.get('warnings',[])
         if warnings:summary+='\n'+'；'.join(str(x) for x in warnings)

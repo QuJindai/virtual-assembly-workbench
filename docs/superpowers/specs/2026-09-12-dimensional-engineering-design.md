@@ -40,3 +40,5 @@ v0.2 adds real datum/feature/gauge/rigid adjustment tools, not a PTB-certified u
 - Existing tests continue passing. New real Qt workflows run on Linux/Windows CI; packaged EXE runs expanded self-test plus true native framebuffer capture. Private real-data validation preserves every raw input hash.
 
 Cloud section contract: `slab_mm` is the full slab thickness, so selected measured points satisfy `abs(distance_to_plane) <= slab_mm / 2` within justified projected floating-point roundoff. GUI and recipes use the same definition.
+
+Coordinate screening conservatively labels nonzero bound differences at projected floating-point roundoff scale as unjudged, with a reason and separate numerical_boundary_count. Exact-bound values remain inclusive; no fixed engineering tolerance floor is introduced. The estimate is not measurement uncertainty, and original computed values and limits are preserved.

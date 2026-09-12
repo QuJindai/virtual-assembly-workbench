@@ -123,22 +123,32 @@ def evaluate_points(source, target, controls, *, axis_frame='world'):
                 raise ValueError('上下限必须为有限数值或留空。')
         if lo is not None and hi is not None and lo>hi:
             raise ValueError('控制下限不能大于上限。')
-        value=None;status='missing'
+        value=None;status='missing';boundary=False;roundoff=None;reason=None
         missing=[]
         if pid not in src:missing.append('source')
         if pid not in ref:missing.append('reference')
         if not missing:
             value=float((src[pid]-ref[pid])@axis)
             if not np.isfinite(value):raise ValueError('坐标差超出有限数值范围，请检查单位与坐标。')
-            if lo is None and hi is None:status='unjudged'
-            else:status='pass' if (lo is None or value>=lo) and (hi is None or value<=hi) else 'fail'
+            if lo is None and hi is None:status='unjudged';reason='no_limits'
+            else:
+                status='pass' if (lo is None or value>=lo) and (hi is None or value<=hi) else 'fail'
+                # Flag nonzero discrepancies at floating-point roundoff scale;
+                # never silently enlarge an engineering tolerance to pass them.
+                factor=8*np.finfo(float).eps
+                estimate=float((factor*np.abs(src[pid])+factor*np.abs(ref[pid]))@np.abs(axis))
+                exact_boundary=any(b is not None and value==b for b in (lo,hi))
+                boundary=not exact_boundary and any(b is not None and 0<abs(value-b)<=estimate for b in (lo,hi))
+                if boundary:status='unjudged';reason='floating_point_boundary';roundoff=estimate
         rows.append(dict(name=name,point_id=pid,axis=axis.tolist(),value_mm=value,
-                         lower_mm=lo,upper_mm=hi,status=status,missing=missing))
+                         lower_mm=lo,upper_mm=hi,status=status,missing=missing,
+                         numerical_boundary=boundary,roundoff_estimate_mm=roundoff,unjudged_reason=reason))
     counts=Counter(x['status'] for x in rows)
     overall='incomplete' if counts['missing'] else 'fail' if counts['fail'] else 'unjudged' if counts['unjudged'] else 'pass'
     return dict(method='point_directional_limits',units='mm',scope=source.point_scope,axis_frame=axis_frame,
                 rows=rows,overall=overall,
                 statistics=dict(total_count=len(rows),pass_count=counts['pass'],fail_count=counts['fail'],
                                 missing_count=counts['missing'],unjudged_count=counts['unjudged'],
+                                numerical_boundary_count=sum(row['numerical_boundary'] for row in rows),
                                 coverage=(len(rows)-counts['missing'])/len(rows)),
-                interpretation='Explicit signed coordinate-deviation screening. Not a GD&T or manufacturing release verdict.')
+                interpretation='Explicit signed coordinate-deviation screening. Nonzero boundary discrepancies at estimated arithmetic roundoff are unjudged; limits are not relaxed. Not a measurement-uncertainty estimate, GD&T or manufacturing release verdict.')

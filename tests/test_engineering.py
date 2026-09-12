@@ -33,9 +33,9 @@ def test_receipt_replay_history_and_export(tmp_path):
     assert restored['result']==r['result']
     files=export_engineering(tmp_path/'reports',s,t,r)
     assert len(files)==3
-    html=next(x for x in files if x.suffix=='.html').read_text()
+    html=next(x for x in files if x.suffix=='.html').read_text(encoding='utf-8')
     assert '&lt;critical&gt;' in html and '<critical>' not in html
-    assert len(json.loads(next(x for x in files if x.suffix=='.json').read_text())['result']['rows'])==1
+    assert len(json.loads(next(x for x in files if x.suffix=='.json').read_text(encoding='utf-8'))['result']['rows'])==1
     second=export_engineering(tmp_path/'reports',s,t,r)
     assert second[0].parent!=files[0].parent
     s.points[0,2]=1
