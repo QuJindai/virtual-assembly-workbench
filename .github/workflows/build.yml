@@ -46,6 +46,7 @@ jobs:
         with:
           name: linux-validation
           path: artifacts/
+          retention-days: 7
 
   windows-build:
     runs-on: windows-latest
@@ -109,9 +110,11 @@ jobs:
         with:
           name: windows-validation
           path: artifacts/
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         with:
           name: windows-portable
+          retention-days: 7
           path: |
             AssemblyWorkbench-Windows-x64.zip
             SHA256SUMS.txt
